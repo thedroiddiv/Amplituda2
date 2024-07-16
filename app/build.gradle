@@ -1,8 +1,10 @@
 apply plugin: 'com.android.library'
+apply plugin: 'maven-publish'
 
 android {
     compileSdk 34
     ndkVersion "21.1.6352462"
+    namespace = "linc.com.amplituda"
 
     defaultConfig {
         minSdkVersion 21
@@ -47,4 +49,14 @@ android {
 
 dependencies {
     implementation fileTree(dir: "libs", include: ["*.jar"])
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            groupId = 'com.thedroiddiv.amplituda'
+            artifactId = 'amplituda'
+            version = "1.0.0"
+        }
+    }
 }
