@@ -3,7 +3,7 @@
 #include <vector>
 #include "error_code.h"
 #include "compress_type.h"
-//#include <android/log.h>
+#include <android/log.h>
 
 extern "C" {
 #include "libavutil/timestamp.h"
@@ -34,44 +34,50 @@ void write_cache_data(
 }
 
 std::string concat_temp_amplitudes_data(
-        std::vector<int>* temp_data
+        std::vector<float>* temp_data
 ) {
     std::string temp_sample_str;
-    for(int temp_sample : *temp_data) {
+    for(float temp_sample : *temp_data) {
         temp_sample_str += std::to_string(temp_sample) + "\n";
     }
     return temp_sample_str;
 }
 
 std::string compress_temp_amplitudes_data(
-        std::vector<int>* temp_data,
-        const int* compress_type
+        std::vector<float>* temp_data,
+        const int* compress_type,
+        const int chunk_size
 ) {
     std::string compress_result;
 
     if(temp_data->empty())
         return compress_result;
 
-    switch (*compress_type) {
-        case COMPRESS_SKIP: {
-            compress_result += std::to_string(temp_data->at(0));
-            break;
-        }
-        case COMPRESS_PEEK: {
-            std::sort(temp_data->begin(), temp_data->end());
-            compress_result += std::to_string(temp_data->at(0));
-            break;
-        }
-        case COMPRESS_AVERAGE: {
-            int sum = 0;
-            for(int temp_sample : *temp_data) {
-                sum += temp_sample;
+    // Take every chunk_size elements in chunk and compress them
+    for(int i = 0; i<temp_data->size(); i += chunk_size) {
+        int end_index = i+chunk_size < temp_data->size() ? i+chunk_size : temp_data->size();
+        switch (*compress_type) {
+            case COMPRESS_SKIP: {
+                compress_result += std::to_string(temp_data->at(i));
+                break;
             }
-            compress_result += std::to_string( (int) (sum / temp_data->size()) );
-            break;
+            case COMPRESS_PEEK: {
+                std::sort(temp_data->begin() + i, temp_data->begin()+(i+end_index));
+                compress_result += std::to_string(temp_data->at(0));
+                break;
+            }
+            case COMPRESS_AVERAGE: {
+                float sum = 0;
+                for(int j = i; j < end_index; j++) {
+                    sum +=  temp_data->at(j);
+                }
+                float avg = sum/(end_index-i);
+                compress_result += std::to_string(avg);
+                break;
+            }
         }
+        compress_result += "\n";
     }
-    compress_result += "\n";
     return compress_result;
 }
 
@@ -127,7 +133,7 @@ double get_sample(const AVCodecContext* codecCtx, uint8_t* buffer, int sampleInd
 static int decode_packet(
         AVCodecContext *dec,
         const AVPacket *pkt,
-        std::vector<int>* temp_samples,
+        std::vector<float>* temp_samples,
         std::string* errors
 ) {
     int ret = 0;
@@ -154,12 +160,12 @@ static int decode_packet(
 
         // write the frame data to output file
         if(dec->codec->type == AVMEDIA_TYPE_AUDIO) {
-            double sum = 0;
             for(int i = 0; i < frame->nb_samples; i++) {
                 double sample = get_sample(audio_dec_ctx, frame->data[0], i);
-                sum += sample * sample;
+                // append each sample to the amplitudes
+                double unsigned_sample =  sqrt(sample * sample);
+                temp_samples->push_back(unsigned_sample);
             }
-            temp_samples->push_back(((int)(sqrt(sum / frame->nb_samples) * 100)));
         }
 
         av_frame_unref(frame);
@@ -269,7 +275,7 @@ Java_linc_com_amplituda_Amplituda_amplitudesFromAudioJNI(
 
     // meta and params
     int current_frame_idx = 0, current_progress = 0, nb_frames = 0;
-    int actual_frames_per_second, compression_divider;
+    int actual_frames_per_second, chunk_size = 1;
     double duration = 0.0;
     bool valid_listener = false;
     FILE *cache_file;
@@ -298,7 +304,7 @@ Java_linc_com_amplituda_Amplituda_amplitudesFromAudioJNI(
     jobject amplitudaResultReturnObject = (env)->NewObject(amplitudaResultClass, constructor);
 
     // prepare result containers
-    std::vector<int> temp_data;
+    std::vector<float> temp_data;
     std::string amplitudes_data;
     std::string errors_data;
 
@@ -361,12 +367,7 @@ Java_linc_com_amplituda_Amplituda_amplitudesFromAudioJNI(
     }
 
     // prepare compression params
-    actual_frames_per_second = (int) (nb_frames / duration);
-
-    // cannot compress this audio data
-    if(nb_frames == 0) {
-        compress_type = COMPRESS_NONE;
-    }
+    actual_frames_per_second = audio_dec_ctx->sample_rate;
 
     // cannot compress to preferred frames per second
     if(preferred_frames_per_second > actual_frames_per_second && actual_frames_per_second > 0) {
@@ -375,13 +376,13 @@ Java_linc_com_amplituda_Amplituda_amplitudesFromAudioJNI(
     }
 
     // no need to compress data
-    if(preferred_frames_per_second == actual_frames_per_second/* || preferred_frames_per_second == 0*/) {
+    if(preferred_frames_per_second == actual_frames_per_second || preferred_frames_per_second == 0) {
         compress_type = COMPRESS_NONE;
     } else {
-        compression_divider = actual_frames_per_second / preferred_frames_per_second;
+        chunk_size = actual_frames_per_second / preferred_frames_per_second;
         // max compression - x2
-        if(compression_divider < 2) {
-            compression_divider = 2;
+        if(chunk_size < 2) {
+            chunk_size = 2;
         }
     }
 
@@ -391,19 +392,6 @@ Java_linc_com_amplituda_Amplituda_amplitudesFromAudioJNI(
         // check if the packet belongs to a stream we are interested in, otherwise skip it
         if (is_audio_stream) {
             ret = decode_packet(audio_dec_ctx, pkt, &temp_data, &errors_data);
-            // compress data when current_frame_idx is compression_divider
-            if(compress_type != COMPRESS_NONE && current_frame_idx % compression_divider == 0) {
-                std::string temp_sample_str = compress_temp_amplitudes_data(&temp_data, &compress_type);
-                amplitudes_data += temp_sample_str;
-                if(cache_enabled) write_cache_data(cache_file, &temp_sample_str);
-                temp_data.clear();
-            }
-            if(compress_type == COMPRESS_NONE) {
-                std::string temp_sample_str = concat_temp_amplitudes_data(&temp_data);
-                amplitudes_data += temp_sample_str;
-                if(cache_enabled) write_cache_data(cache_file, &temp_sample_str);
-                temp_data.clear();
-            }
         }
         av_packet_unref(pkt);
         if (ret < 0) {
@@ -421,6 +409,21 @@ Java_linc_com_amplituda_Amplituda_amplitudesFromAudioJNI(
         if(is_audio_stream) {
             current_frame_idx++;
         }
+    }
+
+    // compress data when current_frame_idx is chunk_size
+    if(compress_type != COMPRESS_NONE && chunk_size != 0) {
+        std::string temp_sample_str = compress_temp_amplitudes_data(&temp_data, &compress_type, chunk_size);
+        amplitudes_data += temp_sample_str;
+        if(cache_enabled) write_cache_data(cache_file, &temp_sample_str);
+        temp_data.clear();
+    }
+
+    if(compress_type == COMPRESS_NONE) {
+        std::string temp_sample_str = concat_temp_amplitudes_data(&temp_data);
+        amplitudes_data += temp_sample_str;
+        if(cache_enabled) write_cache_data(cache_file, &temp_sample_str);
+        temp_data.clear();
     }
 
     // make last progress listener call
