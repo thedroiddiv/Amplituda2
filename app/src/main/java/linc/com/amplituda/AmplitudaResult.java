@@ -4,11 +4,8 @@ import android.text.TextUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 public final class AmplitudaResult<T> {
 
@@ -51,18 +48,18 @@ public final class AmplitudaResult<T> {
     /**
      * Convert result amplitudes to List
      */
-    public List<Integer> amplitudesAsList() {
+    public List<Float> amplitudesAsList() {
         if(amplitudes == null || amplitudes.isEmpty())
             return Collections.emptyList();
 
         String[] log = amplitudes.split("\n");
-        List<Integer> amplitudes = new ArrayList<>();
+        List<Float> amplitudes = new ArrayList<>();
 
         for (String amplitude : log) {
             if(amplitude.isEmpty()) {
                 break;
             }
-            amplitudes.add(Integer.valueOf(amplitude));
+            amplitudes.add(Float.valueOf(amplitude));
         }
         return amplitudes;
     }
@@ -111,8 +108,8 @@ public final class AmplitudaResult<T> {
      * Extracts list of amplitudes per specific second
      * @param second - specific second from input file
      */
-    public List<Integer> amplitudesForSecond(final int second) {
-        List<Integer> data = amplitudesAsList();
+    public List<Float> amplitudesForSecond(final int second) {
+        List<Float> data = amplitudesAsList();
         final int duration = (int) getAudioDuration(DurationUnit.SECONDS);
 
         if(second > duration || duration == 0) {
@@ -124,7 +121,7 @@ public final class AmplitudaResult<T> {
 
         int index = (second * data.size()) / duration;
 
-        List<Integer> amplitudesForSecond = new ArrayList<>();
+        List<Float> amplitudesForSecond = new ArrayList<>();
 
         for(int i = index; i > index - aps; i--) {
             if(i < 0 || i >= data.size())
